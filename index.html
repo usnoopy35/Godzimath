@@ -348,6 +348,13 @@
         const canvas = document.getElementById('gameCanvas');
         const ctx = canvas.getContext('2d', { alpha: false }); // Optimize
         let animationId, gameTime = 0;
+        
+        // --- FPS Control & Scale Globals ---
+        let lastTime = 0;
+        const TARGET_FPS = 60;
+        const FPS_INTERVAL = 1000 / TARGET_FPS;
+        let viewScale = 1;
+        
         const LEADERBOARD_KEY = 'neon_kaiju_local_scores';
         
         const STATE = { MENU: 0, PLAYING: 1, MATH_PAUSE: 2, GAME_OVER: 3, BOSS_FIGHT: 4, LEVEL_TRANSITION: 5 };
@@ -803,6 +810,15 @@
         function resizeCanvas() {
             canvas.width = window.innerWidth;
             canvas.height = window.innerHeight;
+            
+            // Dynamic Zoom Calculation
+            // Base zoom is 1.0. If width < 800 (mobile portrait), we zoom out (smaller scale) to see more.
+            // But we don't want it too small.
+            if (window.innerWidth < 800) {
+                viewScale = Math.max(0.6, window.innerWidth / 800); 
+            } else {
+                viewScale = 1.0;
+            }
         }
 
         function setupTouchControls() {
@@ -830,7 +846,7 @@
             gameState.score = 0; gameState.levelIndex = 0; gameState.health = 100; gameState.energy = 0; gameState.frameCount = 0;
             gameState.combo = 0;
             startNextLevel(true);
-            if (!animationId) animate();
+            if (!animationId) animate(0);
             
             // Clock
             setInterval(() => {
@@ -1231,16 +1247,30 @@
             }
         }
 
-        function animate() {
+        function animate(timestamp) {
             animationId = requestAnimationFrame(animate);
+
+            // --- FPS THROTTLE LOGIC ---
+            // Calculate elapsed time
+            const elapsed = timestamp - lastTime;
+
+            // If enough time has passed, draw the next frame
+            if (elapsed > FPS_INTERVAL) {
+                // Get ready for next frame by setting lastTime=timestamp, but also adjust for 
+                // specified interval not being a multiple of rAF's interval (16.7ms)
+                lastTime = timestamp - (elapsed % FPS_INTERVAL);
+
+                updateGame();
+                drawGame();
+            }
+        }
+
+        function updateGame() {
             if (gameState.status === STATE.MATH_PAUSE || gameState.status === STATE.GAME_OVER || gameState.status === STATE.LEVEL_TRANSITION) return;
             gameState.frameCount++;
             
             // Screen Shake Logic
-            let shakeX = 0, shakeY = 0;
             if (gameState.camera.shake > 0) {
-                shakeX = (Math.random() - 0.5) * gameState.camera.shake;
-                shakeY = (Math.random() - 0.5) * gameState.camera.shake;
                 gameState.camera.shake *= 0.9;
                 if(gameState.camera.shake < 0.5) gameState.camera.shake = 0;
             }
@@ -1254,61 +1284,25 @@
                 }
             }
 
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-            
-            // Camera follow
-            let targetCamX = player.x - canvas.width / 2;
-            let targetCamY = player.y - canvas.height / 2;
+            // Camera follow (Centered with Scale logic applied below in draw)
+            // Target is center of screen.
+            // World View width is canvas.width / viewScale
+            // World View height is canvas.height / viewScale
+            let targetCamX = player.x - (canvas.width / viewScale) / 2;
+            let targetCamY = player.y - (canvas.height / viewScale) / 2;
             
             // Smooth Camera
             gameState.camera.x += (targetCamX - gameState.camera.x) * 0.1;
             gameState.camera.y += (targetCamY - gameState.camera.y) * 0.1;
             
-            // Clamp
-            gameState.camera.x = Math.max(0, Math.min(gameState.camera.x, 2000 - canvas.width));
-            gameState.camera.y = Math.max(0, Math.min(gameState.camera.y, 2000 - canvas.height));
-
-            const cx = gameState.camera.x + shakeX, cy = gameState.camera.y + shakeY;
-
-            // Background
-            const lvl = PALETTES[gameState.levelIndex];
-            ctx.fillStyle = lvl.bg; ctx.fillRect(0, 0, canvas.width, canvas.height);
-            
-            // Grid Effect (Perspective Illusion)
-            ctx.strokeStyle = lvl.grid; ctx.lineWidth = 1;
-            const ox = -cx % 100, oy = -cy % 100;
-            ctx.beginPath(); 
-            for(let x=ox; x<canvas.width; x+=100) { ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height); } 
-            for(let y=oy; y<canvas.height; y+=100) { ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); } 
-            ctx.stroke();
-
-            // Stars
-            ctx.fillStyle = '#fff';
-            backgroundStars.forEach(s => {
-                const sx = (s.x - cx*0.5 + 2000) % 2000; // Parallax
-                const sy = (s.y - cy*0.5 + 2000) % 2000;
-                if(sx > 0 && sx < canvas.width && sy > 0 && sy < canvas.height) {
-                     ctx.globalAlpha = 0.5 + Math.sin(gameTime * s.blinkSpeed)*0.5;
-                     ctx.fillRect(sx, sy, s.size, s.size);
-                }
-            });
-            ctx.globalAlpha = 1.0;
+            // Clamp Camera to World Bounds
+            // Max X is map_width - visible_width
+            gameState.camera.x = Math.max(0, Math.min(gameState.camera.x, 2000 - (canvas.width / viewScale)));
+            gameState.camera.y = Math.max(0, Math.min(gameState.camera.y, 2000 - (canvas.height / viewScale)));
 
             // Updates
             player.update(); 
-            hazards.forEach(h => {
-                h.tick++;
-                if (h.x - cx + h.width > 0 && h.x - cx < canvas.width && h.y - cy + h.height > 0 && h.y - cy < canvas.height) {
-                     ctx.shadowBlur = 15; ctx.shadowColor = h.color;
-                     ctx.strokeStyle = h.color; ctx.lineWidth = 2;
-                     const pulse = Math.sin(h.tick * 0.1) * 5;
-                     ctx.strokeRect(h.x - cx - pulse, h.y - cy - pulse, h.width + pulse*2, h.height + pulse*2);
-                     ctx.fillStyle = h.color; ctx.globalAlpha = 0.3;
-                     ctx.fillRect(h.x - cx, h.y - cy, h.width, h.height);
-                     ctx.globalAlpha = 1.0; ctx.shadowBlur = 0;
-                }
-            });
-            
+            hazards.forEach(h => h.tick++);
             checkCollisions(); 
             if (boss) boss.update();
             if (gameState.freezeTimer > 0) gameState.freezeTimer--;
@@ -1323,35 +1317,85 @@
             for (let i = buildings.length - 1; i >= 0; i--) {
                 let b = buildings[i];
                 if (b.health <= 0) {
-                    // Combo Logic
-                    gameState.combo++;
-                    gameState.comboTimer = 120; // 2 seconds to chain
+                    gameState.combo++; gameState.comboTimer = 120;
                     const scoreAdd = 50 * gameState.combo;
                     gameState.score += scoreAdd; gameState.levelScore += 50; 
-                    
                     spawnFloatingText(`+${scoreAdd}`, b.x+b.width/2, b.y, '#fbbf24');
-                    spawnParticles(b.x + b.width/2, b.y + b.height/2, b.baseColor, 15, 8); // Explosion
-                    
+                    spawnParticles(b.x + b.width/2, b.y + b.height/2, b.baseColor, 15, 8);
                     if(gameState.energy < 100) gameState.energy = Math.min(100, gameState.energy + 2);
-                    
                     updateHUD();
                     const rand = Math.random();
                     if (rand < 0.30) items.push(new Item(b.x+b.width/2, b.y+b.height/2, 'math'));
                     else if (rand < 0.40) items.push(new Item(b.x+b.width/2, b.y+b.height/2, Math.random() > 0.5 ? 'heal' : 'speed'));
                     else if (rand < 0.43) items.push(new Item(b.x+b.width/2, b.y+b.height/2, 'mega'));
                     else if (rand < 0.45) items.push(new Item(b.x+b.width/2, b.y+b.height/2, Math.random() > 0.5 ? 'shield' : 'freeze'));
-
-                    gameState.camera.shake += 2;
-                    AudioSys.sfxExplosion(); buildings.splice(i, 1);
+                    gameState.camera.shake += 2; AudioSys.sfxExplosion(); buildings.splice(i, 1);
                 }
             }
 
             if (!boss && gameState.levelScore >= BOSS_SPAWN_THRESHOLD) triggerBoss();
+            if (gameState.health <= 0) endGame();
+            
+            // Text float update
+            floatingTexts.forEach((ft, i) => {
+                ft.y += ft.vy; ft.life--; if(ft.life <= 0) floatingTexts.splice(i, 1);
+            });
+            // Particles update
+            particles.forEach((p, idx) => { p.update(); if(p.life <= 0) particles.splice(idx, 1); });
+            // Items update
+            items.forEach(i => i.update());
+        }
 
-            // Draw Order
+        function drawGame() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            // --- SCALE VIEWPORT START ---
+            ctx.save();
+            ctx.scale(viewScale, viewScale);
+
+            let shakeX = 0, shakeY = 0;
+            if (gameState.camera.shake > 0) {
+                shakeX = (Math.random() - 0.5) * gameState.camera.shake;
+                shakeY = (Math.random() - 0.5) * gameState.camera.shake;
+            }
+            const cx = gameState.camera.x + shakeX, cy = gameState.camera.y + shakeY;
+
+            // Background
+            const lvl = PALETTES[gameState.levelIndex];
+            // We need to fill a larger area if scaled down, but calculate rect normally and scale handles it? 
+            // Actually, we should fill the logical viewport size.
+            // Or simpler: fill extra large area
+            ctx.fillStyle = lvl.bg; 
+            // Map bounds are 0,0 to 2000,2000. But we might see outside.
+            // Fill visible screen area in world coords
+            ctx.fillRect(cx, cy, canvas.width/viewScale, canvas.height/viewScale);
+            
+            // Grid Effect
+            ctx.strokeStyle = lvl.grid; ctx.lineWidth = 1;
+            const ox = -cx % 100, oy = -cy % 100;
+            ctx.beginPath(); 
+            // Draw grid covering the visible world area
+            for(let x=ox; x<canvas.width/viewScale; x+=100) { ctx.moveTo(cx + x, cy); ctx.lineTo(cx + x, cy + canvas.height/viewScale); } 
+            for(let y=oy; y<canvas.height/viewScale; y+=100) { ctx.moveTo(cx, cy + y); ctx.lineTo(cx + canvas.width/viewScale, cy + y); } 
+            ctx.stroke();
+
+            // Stars
+            ctx.fillStyle = '#fff';
+            backgroundStars.forEach(s => {
+                const sx = (s.x - cx*0.5 + 2000) % 2000;
+                const sy = (s.y - cy*0.5 + 2000) % 2000;
+                // Check bounds against scaled viewport
+                if(sx > 0 && sx < canvas.width/viewScale && sy > 0 && sy < canvas.height/viewScale) {
+                     ctx.globalAlpha = 0.5 + Math.sin(gameTime * s.blinkSpeed)*0.5;
+                     ctx.fillRect(sx, sy, s.size, s.size);
+                }
+            });
+            ctx.globalAlpha = 1.0;
+
+            // World Objects (Draw using standard world coordinates logic)
             buildings.forEach(b => b.draw(ctx, cx, cy));
-            items.forEach(i => { i.update(); i.draw(ctx, cx, cy); });
-            particles.forEach((p, idx) => { p.update(); p.draw(ctx, cx, cy); if(p.life <= 0) particles.splice(idx, 1); });
+            items.forEach(i => i.draw(ctx, cx, cy));
+            particles.forEach(p => p.draw(ctx, cx, cy));
             if (boss) boss.draw(ctx, cx, cy);
             
             projectiles.forEach(p => {
@@ -1371,14 +1415,29 @@
                 ctx.shadowColor = 'black'; ctx.shadowBlur = 4;
                 ctx.fillText(ft.text, ft.x-cx, ft.y-cy);
                 ctx.restore();
-                ft.y += ft.vy; ft.life--; if(ft.life <= 0) floatingTexts.splice(i, 1);
             });
-            
+
+            // Hazards
+            hazards.forEach(h => {
+                if (h.x - cx + h.width > 0 && h.x - cx < canvas.width/viewScale && h.y - cy + h.height > 0 && h.y - cy < canvas.height/viewScale) {
+                     ctx.shadowBlur = 15; ctx.shadowColor = h.color;
+                     ctx.strokeStyle = h.color; ctx.lineWidth = 2;
+                     const pulse = Math.sin(h.tick * 0.1) * 5;
+                     ctx.strokeRect(h.x - cx - pulse, h.y - cy - pulse, h.width + pulse*2, h.height + pulse*2);
+                     ctx.fillStyle = h.color; ctx.globalAlpha = 0.3;
+                     ctx.fillRect(h.x - cx, h.y - cy, h.width, h.height);
+                     ctx.globalAlpha = 1.0; ctx.shadowBlur = 0;
+                }
+            });
+
+            ctx.restore(); 
+            // --- SCALE VIEWPORT END ---
+
+            // Draw Joystick (UI Layer - Unscaled)
             if (joystick.active) {
                 ctx.strokeStyle = 'rgba(0, 255, 255, 0.3)'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(joystick.originX, joystick.originY, 50, 0, Math.PI * 2); ctx.stroke();
                 ctx.fillStyle = 'rgba(0, 255, 255, 0.5)'; ctx.beginPath(); ctx.arc(joystick.currentX, joystick.currentY, 20, 0, Math.PI * 2); ctx.fill();
             }
-            if (gameState.health <= 0) endGame();
         }
 
         function endGame(victory = false) {
