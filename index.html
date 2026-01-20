@@ -123,12 +123,20 @@
                     </div>
                 </div>
 
-                <div class="mb-6">
+                <div class="mb-4">
                     <label class="block text-xs mb-2 text-red-400 font-bold uppercase tracking-widest">戰鬥強度 (Threat Level)</label>
                     <div class="flex gap-2">
                         <button class="combat-diff-btn flex-1 py-2 bg-gray-800 hover:bg-red-900 rounded text-xs active-combat-diff border border-gray-600 text-red-300 transition-all" data-diff="easy">休閒</button>
                         <button class="combat-diff-btn flex-1 py-2 bg-gray-800 hover:bg-red-900 rounded text-xs border border-gray-600 text-red-300 transition-all" data-diff="medium">標準</button>
                         <button class="combat-diff-btn flex-1 py-2 bg-gray-800 hover:bg-red-900 rounded text-xs border border-gray-600 text-red-300 transition-all" data-diff="hard">夢魘</button>
+                    </div>
+                </div>
+
+                <div class="mb-6">
+                    <label class="block text-xs mb-2 text-purple-400 font-bold uppercase tracking-widest">背景音樂 (Audio Link)</label>
+                    <div class="flex gap-2">
+                        <button class="bgm-btn flex-1 py-2 bg-gray-800 hover:bg-purple-900 rounded text-xs border border-gray-600 text-purple-300 transition-all" data-bgm="on">開啟</button>
+                        <button class="bgm-btn flex-1 py-2 bg-gray-800 hover:bg-purple-900 rounded text-xs active-bgm border border-gray-600 text-purple-300 transition-all bg-purple-900 ring-2 ring-purple-400" data-bgm="off">關閉</button>
                     </div>
                 </div>
 
@@ -263,6 +271,7 @@
         // --- Audio System (Enhanced) ---
         const AudioSys = {
             ctx: null,
+            bgmInterval: null,
             init: function() {
                 const AudioContext = window.AudioContext || window.webkitAudioContext;
                 this.ctx = new AudioContext();
@@ -318,6 +327,64 @@
                 gain.connect(this.ctx.destination);
                 noise.start();
             },
+            // --- NEW BGM SYSTEM (Procedural Synthwave) ---
+            playBGM: function() {
+                if (this.bgmInterval || !this.ctx) return;
+                const ctx = this.ctx;
+                
+                // Simple sequences
+                const bassSeq = [55, 55, 55, 55, 49, 49, 65.4, 65.4]; // A1, G1, C2
+                let noteIdx = 0;
+                
+                this.bgmInterval = setInterval(() => {
+                    if (ctx.state === 'suspended') ctx.resume();
+                    const t = ctx.currentTime;
+                    
+                    // Bass Line (Every 0.25s approx)
+                    const osc = ctx.createOscillator();
+                    const gain = ctx.createGain();
+                    const filter = ctx.createBiquadFilter();
+                    
+                    osc.type = 'sawtooth';
+                    const freq = bassSeq[noteIdx % bassSeq.length];
+                    osc.frequency.setValueAtTime(freq, t);
+                    
+                    filter.type = 'lowpass';
+                    filter.frequency.setValueAtTime(300, t);
+                    filter.frequency.exponentialRampToValueAtTime(100, t + 0.2);
+                    
+                    gain.gain.setValueAtTime(0.15, t);
+                    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.25);
+                    
+                    osc.connect(filter);
+                    filter.connect(gain);
+                    gain.connect(ctx.destination);
+                    osc.start(t);
+                    osc.stop(t + 0.25);
+                    
+                    // Melody (Hi-hat/Arp feel)
+                    if (noteIdx % 2 === 0) {
+                        const mOsc = ctx.createOscillator();
+                        const mGain = ctx.createGain();
+                        mOsc.type = 'square';
+                        mOsc.frequency.setValueAtTime(freq * 4, t); // 2 octaves up
+                        mGain.gain.setValueAtTime(0.03, t);
+                        mGain.gain.exponentialRampToValueAtTime(0.001, t + 0.05);
+                        mOsc.connect(mGain);
+                        mGain.connect(ctx.destination);
+                        mOsc.start(t);
+                        mOsc.stop(t + 0.05);
+                    }
+                    
+                    noteIdx++;
+                }, 250); // 120 BPM 8th notes
+            },
+            stopBGM: function() {
+                if (this.bgmInterval) {
+                    clearInterval(this.bgmInterval);
+                    this.bgmInterval = null;
+                }
+            },
             sfxShoot: function() { this.playTone(800, 'sawtooth', 0.15, 0.05, 400); }, 
             sfxExplosion: function() { this.playNoise(0.5, 0.2); this.playTone(100, 'sawtooth', 0.3, 0.1, 50); },
             sfxCorrect: function() { 
@@ -335,6 +402,7 @@
                 this.playTone(100 + Math.random()*50, 'sawtooth', 0.1, 0.2);
             },
             sfxLevelClear: function() {
+                this.stopBGM(); // Stop music on win
                 [523, 659, 783, 1046, 1318].forEach((freq, i) => {
                     setTimeout(() => this.playTone(freq, 'triangle', 0.3, 0.1), i * 120);
                 });
@@ -379,7 +447,8 @@
             keys: {}, levelStartTime: 0,
             freezeTimer: 0,
             frameCount: 0,
-            combo: 0, comboTimer: 0, maxCombo: 0
+            combo: 0, comboTimer: 0, maxCombo: 0,
+            bgmEnabled: false
         };
 
         let joystick = { active: false, originX: 0, originY: 0, currentX: 0, currentY: 0, dx: 0, dy: 0 };
@@ -417,12 +486,16 @@
         };
         setupDiffBtns('.math-diff-btn', 'active-math-diff', 'blue');
         setupDiffBtns('.combat-diff-btn', 'active-combat-diff', 'red');
+        setupDiffBtns('.bgm-btn', 'active-bgm', 'purple'); // BGM Toggles
 
         document.getElementById('startGameBtn').addEventListener('click', () => {
             AudioSys.init(); if (AudioSys.ctx.state === 'suspended') AudioSys.ctx.resume();
+            
             gameState.operators = Array.from(document.querySelectorAll('.active-op')).map(b => b.dataset.op);
             gameState.mathDiff = document.querySelector('.active-math-diff').dataset.diff;
             gameState.combatDiff = document.querySelector('.active-combat-diff').dataset.diff;
+            gameState.bgmEnabled = document.querySelector('.active-bgm').dataset.bgm === 'on';
+            
             startGame();
         });
 
@@ -447,7 +520,11 @@
 
             switch(op) {
                 case 'add': answer = a + b; symbol = '+'; break;
-                case 'sub': if (a < b) [a, b] = [b, a]; answer = a - b; symbol = '-'; break;
+                case 'sub': 
+                    // CRITICAL FIX: Ensure a >= b for subtraction
+                    if (a < b) [a, b] = [b, a]; 
+                    answer = a - b; symbol = '-'; 
+                    break;
                 case 'mul': 
                     if (diff === 'hard') { a = Math.floor(a/2); b = Math.floor(b/2); } 
                     else if (diff === 'medium') { a = Math.min(a, 12); b = Math.min(b, 12); }
@@ -471,7 +548,9 @@
                     wrong = answer + offset;
                 }
                 
-                if (wrong < 0 && op !== 'sub') wrong = Math.abs(wrong);
+                // CRITICAL FIX: Ensure all options are non-negative
+                if (wrong < 0) wrong = Math.abs(wrong);
+                
                 options.add(wrong);
             }
             return { question: `${a} ${symbol} ${b} = ?`, answer: answer, options: Array.from(options).sort(() => Math.random() - 0.5) };
@@ -848,6 +927,11 @@
             startNextLevel(true);
             if (!animationId) animate(0);
             
+            // Check music pref
+            if (gameState.bgmEnabled) {
+                AudioSys.playBGM();
+            }
+
             // Clock
             setInterval(() => {
                 if(gameState.status === STATE.PLAYING || gameState.status === STATE.BOSS_FIGHT) {
@@ -887,6 +971,11 @@
             updateHUD();
             document.getElementById('bossContainer').classList.add('hidden');
             spawnFloatingText(`SECTOR ${lvl.id}: START`, player.x, player.y - 100, '#fff', 30);
+            
+            // Re-check music if it stopped
+            if (gameState.bgmEnabled && !AudioSys.bgmInterval) {
+                AudioSys.playBGM();
+            }
         }
 
         class Building {
@@ -898,7 +987,11 @@
                 for(let i=5; i<w-10; i+=15) for(let j=5; j<h-10; j+=20) if(Math.random() > 0.4) this.windows.push({x: i, y: j, on: Math.random()>0.5});
             }
             draw(ctx, cx, cy) {
-                if(this.x-cx+this.width<0 || this.x-cx>canvas.width || this.y-cy+this.height<0 || this.y-cy>canvas.height) return;
+                // FIXED: Use viewScale for correct culling on mobile
+                const visibleW = canvas.width / viewScale;
+                const visibleH = canvas.height / viewScale;
+                
+                if(this.x-cx+this.width<0 || this.x-cx>visibleW || this.y-cy+this.height<0 || this.y-cy>visibleH) return;
                 
                 // Neon glow outline
                 ctx.shadowBlur = 10; ctx.shadowColor = this.baseColor;
@@ -1109,7 +1202,11 @@
                 this.life -= 0.02;
             }
             draw(ctx, cx, cy) {
-                if (this.x - cx < 0 || this.x - cx > canvas.width || this.y - cy < 0 || this.y - cy > canvas.height) return;
+                // FIXED: Use viewScale for correct culling on mobile
+                const visibleW = canvas.width / viewScale;
+                const visibleH = canvas.height / viewScale;
+
+                if (this.x - cx < 0 || this.x - cx > visibleW || this.y - cy < 0 || this.y - cy > visibleH) return;
                 ctx.globalAlpha = Math.max(0, this.life);
                 ctx.fillStyle = this.color; 
                 ctx.fillRect(this.x-cx, this.y-cy, this.size, this.size); 
@@ -1442,6 +1539,7 @@
 
         function endGame(victory = false) {
             gameState.status = STATE.GAME_OVER;
+            AudioSys.stopBGM(); // Stop music on game over
             document.getElementById('hud').classList.add('hidden'); document.getElementById('levelClearModal').classList.add('hidden');
             const modal = document.getElementById('gameOverModal'); modal.classList.remove('hidden');
             document.getElementById('endTitle').innerText = victory ? "MISSION COMPLETE" : "SYSTEM FAILURE";
